@@ -3,6 +3,8 @@ const path = require("path");
 
 const app = express();
 
+const API_KEY = "4e045393f0cd4f984be5368a93fe17fb";
+
 app.use(express.static(path.join(__dirname,"public")));
 
 const airports = {
@@ -11,91 +13,89 @@ DXB:{name:"Dubai",lat:25.2528,lon:55.3644},
 BKK:{name:"Bangkok",lat:13.6900,lon:100.7501}
 };
 
-const flights = {
-EK28:{from:"GLA",to:"DXB",dep:"14:35",arr:"21:00"},
-EK376:{from:"DXB",to:"BKK",dep:"22:35",arr:"07:40"},
-EK375:{from:"BKK",to:"DXB",dep:"09:30",arr:"13:30"},
-EK27:{from:"DXB",to:"GLA",dep:"14:15",arr:"18:45"}
+const routes = {
+EK28:{from:"GLA",to:"DXB"},
+EK376:{from:"DXB",to:"BKK"},
+EK375:{from:"BKK",to:"DXB"},
+EK27:{from:"DXB",to:"GLA"}
 };
 
-function createTime(time){
+async function getFlight(flight){
 
-let p=time.split(":");
+try{
 
-let now=new Date();
+const res = await fetch(
+`http://api.aviationstack.com/v1/flights?access_key=${API_KEY}&flight_iata=${flight}`
+);
 
-let d=new Date(Date.UTC(
-now.getUTCFullYear(),
-now.getUTCMonth(),
-now.getUTCDate(),
-parseInt(p[0]),
-parseInt(p[1]),
-0
-));
+const data = await res.json();
 
-return d;
+if(data.data && data.data.length>0){
+return data.data[0];
+}
+
+return null;
+
+}catch(e){
+
+console.log("API error",flight);
+return null;
 
 }
 
-function getTimes(dep,arr){
-
-let depTime=createTime(dep);
-let arrTime=createTime(arr);
-
-if(arrTime<depTime){
-arrTime.setUTCDate(arrTime.getUTCDate()+1);
 }
 
-return{depTime,arrTime};
-
-}
-
-function getStatus(dep,arr){
-
-let now=Date.now();
-let t=getTimes(dep,arr);
-
-if(now<t.depTime) return "Scheduled";
-if(now>=t.depTime && now<=t.arrTime) return "In Progress";
-
-return "Completed";
-
-}
-
-app.get("/api/flights",(req,res)=>{
+app.get("/api/flights",async(req,res)=>{
 
 let result=[];
 
-for(const f in flights){
+for(const flight in routes){
 
-let s=flights[f];
-let times=getTimes(s.dep,s.arr);
+let api = await getFlight(flight);
+
+let route = routes[flight];
+
+let depAirport = airports[route.from];
+let arrAirport = airports[route.to];
+
+let status="Scheduled";
+let depTime=null;
+let arrTime=null;
+
+if(api){
+
+status = api.flight_status;
+
+depTime = api.departure?.scheduled;
+arrTime = api.arrival?.scheduled;
+
+}
 
 result.push({
 
-number:f,
-status:getStatus(s.dep,s.arr),
+number:flight,
+status:status,
 
 departure:{
 airport:{
-name:airports.name,
+name:depAirport.name,
 location:{
-lat:airports.lat,
-lon:airports.lon
+lat:depAirport.lat,
+lon:depAirport.lon
 }
 },
-scheduledTime:{local:times.depTime}
+scheduledTime:{local:depTime}
 },
 
 arrival:{
 airport:{
-name:airports.name,
+name:arrAirport.name,
 location:{
-lat:airports.lat,
-lon:airports.lon
+lat:arrAirport.lat,
+lon:arrAirport.lon
 }
 },
-scheduledTime:{local:times.arrTime}
+scheduledTime:{local:arrTime}
 }
 
 });
@@ -106,36 +106,31 @@ res.json(result);
 
 });
 
-app.get("/nextflight",(req,res)=>{
+app.get("/nextflight",async(req,res)=>{
 
-let now=Date.now();
-let next=null;
+for(const flight of ["EK28","EK376","EK375","EK27"]){
 
-for(const f in flights){
+let api = await getFlight(flight);
 
-let s=flights[f];
-let t=getTimes(s.dep,s.arr);
+if(api){
 
-if(t.depTime>now){
-
-if(!next || t.depTime<next.time){
-next={flight:f,from:s.from,to:s.to,time:t.depTime};
-}
-
-}
-
-}
-
-res.json(next);
-
+return res.json({
+flight:flight,
+from:routes.from,
+to:routes.to,
+time:api.departure?.scheduled
 });
 
-app.get("/history",(req,res)=>{
-res.json([]);
+}
+
+}
+
+res.json(null);
+
 });
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT,()=>{
-console.log("Flight tracker running");
+console.log("Leni's Flight Tracker running");
 });
