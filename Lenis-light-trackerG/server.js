@@ -1,10 +1,10 @@
-const express = require("express");
-const fs = require("fs");
-const path = require("path");
+const express=require("express");
+const fs=require("fs");
+const path=require("path");
 
-const app = express();
+const app=express();
 
-const API_KEY = "e5025315camshdc195fde2ccf1d8p179bc9jsn2d3f77b33509";
+const API_KEY="e5025315camshdc195fde2ccf1d8p179bc9jsn2d3f77b33509";
 
 app.use(express.static(path.join(__dirname,"public")));
 
@@ -14,19 +14,65 @@ DXB:{name:"Dubai",lat:25.2528,lon:55.3644},
 BKK:{name:"Bangkok",lat:13.6900,lon:100.7501}
 };
 
-const trackedFlights=["EK27","EK28","EK375","EK376"];
+const flights={
+EK28:{from:"GLA",to:"DXB",dep:"14:35",arr:"21:00"},
+EK376:{from:"DXB",to:"BKK",dep:"22:35",arr:"07:40"},
+EK375:{from:"BKK",to:"DXB",dep:"09:30",arr:"13:30"},
+EK27:{from:"DXB",to:"GLA",dep:"14:15",arr:"18:45"}
+};
 
-async function getAirportFlights(iata){
+function createTime(time){
 
-try{
+let p=time.split(":");
 
 let now=new Date();
 
-let start=new Date(now.getTime()-6*60*60*1000).toISOString();
-let end=new Date(now.getTime()+24*60*60*1000).toISOString();
+let d=new Date(Date.UTC(
+now.getUTCFullYear(),
+now.getUTCMonth(),
+now.getUTCDate(),
+parseInt(p[0]),
+parseInt(p[1]),
+0
+));
+
+return d;
+
+}
+
+function getTimes(dep,arr){
+
+let depTime=createTime(dep);
+let arrTime=createTime(arr);
+
+if(arrTime<depTime){
+arrTime.setUTCDate(arrTime.getUTCDate()+1);
+}
+
+return{depTime,arrTime};
+
+}
+
+function getStatus(dep,arr){
+
+let now=Date.now();
+
+let t=getTimes(dep,arr);
+
+if(now<t.depTime) return "Scheduled";
+
+if(now>=t.depTime && now<=t.arrTime) return "In Progress";
+
+return "Completed";
+
+}
+
+async function checkCancellation(flight){
+
+try{
 
 const res=await fetch(
-`https://aerodatabox.p.rapidapi.com/flights/airports/iata/${iata}/${start}/${end}?withLocation=false`,
+`https://aerodatabox.p.rapidapi.com/flights/number/${flight}`,
 {
 headers:{
 "X-RapidAPI-Key":API_KEY,
@@ -37,53 +83,35 @@ headers:{
 
 const data=await res.json();
 
-return data.departures || [];
+if(Array.isArray(data) && data.length>0){
+
+if(data[0].status==="Canceled"){
+return true;
+}
+
+}
 
 }catch(e){
 
-console.log("Airport API error:",iata);
-
-return [];
+return false;
 
 }
 
-}
-
-async function findTrackedFlights(){
-
-let airportsToCheck=["GLA","DXB","BKK"];
-
-let found=[];
-
-for(const airport of airportsToCheck){
-
-let flights=await getAirportFlights(airport);
-
-for(const f of flights){
-
-if(trackedFlights.includes(f.number)){
-found.push(f);
-}
-
-}
-
-}
-
-return found;
+return false;
 
 }
 
 function loadHistory(){
 
-if(!fs.existsSync("history.json")) return [];
+if(!fs.existsSync("history.json")) return[];
 
 return JSON.parse(fs.readFileSync("history.json"));
 
 }
 
-function saveHistory(history){
+function saveHistory(h){
 
-fs.writeFileSync("history.json",JSON.stringify(history,null,2));
+fs.writeFileSync("history.json",JSON.stringify(h,null,2));
 
 }
 
@@ -91,21 +119,23 @@ async function updateHistory(){
 
 let history=loadHistory();
 
-let flights=await findTrackedFlights();
+for(const f in flights){
 
-for(const f of flights){
+let s=flights[f];
 
-let last=[...history].reverse().find(h=>h.flight===f.number);
+let cancelled=await checkCancellation(f);
 
-if(last && last.status===f.status) continue;
+let status=cancelled ? "Canceled" : getStatus(s.dep,s.arr);
+
+let last=[...history].reverse().find(h=>h.flight===f);
+
+if(last && last.status===status) continue;
 
 history.push({
 time:new Date().toISOString(),
-flight:f.number,
-status:f.status
+flight:f,
+status:status
 });
-
-console.log("Logged:",f.number,f.status);
 
 }
 
@@ -113,48 +143,43 @@ saveHistory(history);
 
 }
 
-app.get("/api/flights",async(req,res)=>{
-
-let flights=await findTrackedFlights();
+app.get("/api/flights",(req,res)=>{
 
 let result=[];
 
-for(const f of flights){
+for(const f in flights){
 
-let depAirport=airports[f.departure.airport.iata];
-let arrAirport=airports[f.arrival.airport.iata];
+let s=flights[f];
 
-if(!depAirport || !arrAirport) continue;
+let times=getTimes(s.dep,s.arr);
+
+let status=getStatus(s.dep,s.arr);
 
 result.push({
 
-number:f.number,
-status:f.status,
+number:f,
+status:status,
 
 departure:{
 airport:{
-name:depAirport.name,
+name:airports.name,
 location:{
-lat:depAirport.lat,
-lon:depAirport.lon
+lat:airports.lat,
+lon:airports.lon
 }
 },
-scheduledTime:{
-local:f.departure.scheduledTime.local
-}
+scheduledTime:{local:times.depTime}
 },
 
 arrival:{
 airport:{
-name:arrAirport.name,
+name:airports.name,
 location:{
-lat:arrAirport.lat,
-lon:arrAirport.lon
+lat:airports.lat,
+lon:airports.lon
 }
 },
-scheduledTime:{
-local:f.arrival.scheduledTime.local
-}
+scheduledTime:{local:times.arrTime}
 }
 
 });
@@ -162,6 +187,32 @@ local:f.arrival.scheduledTime.local
 }
 
 res.json(result);
+
+});
+
+app.get("/nextflight",(req,res)=>{
+
+let now=Date.now();
+
+let next=null;
+
+for(const f in flights){
+
+let s=flights[f];
+
+let t=getTimes(s.dep,s.arr);
+
+if(t.depTime>now){
+
+if(!next || t.depTime<next.time){
+next={flight:f,time:t.depTime,from:s.from,to:s.to};
+}
+
+}
+
+}
+
+res.json(next);
 
 });
 
