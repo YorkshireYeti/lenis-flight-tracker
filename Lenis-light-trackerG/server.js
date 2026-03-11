@@ -1,38 +1,30 @@
 const express = require("express");
 const fs = require("fs");
+const path = require("path");
 
 const app = express();
 
-const API_KEY = "e5025315camshdc195fde2ccf1d8p179bc9jsn2d3f77b33509";
+const API_KEY = process.env.API_KEY;
 
-app.use(express.static("public"));
+app.use(express.static(path.join(__dirname,"public")));
 
-const flights = ["EK28","EK376","EK375","EK27"];
+const airports={
+GLA:{name:"Glasgow",lat:55.8719,lon:-4.43306},
+DXB:{name:"Dubai",lat:25.2528,lon:55.3644},
+BKK:{name:"Bangkok",lat:13.6900,lon:100.7501}
+};
 
-function loadHistory(){
+const tracked=["EK27","EK28","EK375","EK376"];
 
-if(!fs.existsSync("history.json")){
-return [];
-}
-
-return JSON.parse(fs.readFileSync("history.json"));
-
-}
-
-function saveHistory(history){
-
-fs.writeFileSync("history.json",JSON.stringify(history,null,2));
-
-}
-
-async function getFlight(flight){
-
-const today = new Date().toISOString().split("T")[0];
+async function getAirportBoard(iata){
 
 try{
 
-const res = await fetch(
-`https://aerodatabox.p.rapidapi.com/flights/number/${flight}/${today}?withLocation=true`,
+let start=new Date(Date.now()-6*60*60*1000).toISOString();
+let end=new Date(Date.now()+24*60*60*1000).toISOString();
+
+const res=await fetch(
+`https://aerodatabox.p.rapidapi.com/flights/airports/iata/${iata}/${start}/${end}`,
 {
 headers:{
 "X-RapidAPI-Key":API_KEY,
@@ -41,68 +33,75 @@ headers:{
 }
 );
 
-const data = await res.json();
+const data=await res.json();
 
-if(Array.isArray(data) && data.length>0){
-return data[0];
-}
-
-return null;
+return data.departures||[];
 
 }catch(e){
 
-console.log("API error:",flight);
-return null;
+console.log("Airport error",iata);
+
+return[];
 
 }
 
 }
 
-app.get("/api/flights", async (req,res)=>{
+async function findFlights(){
 
-let results=[];
+let airportsToCheck=["GLA","DXB","BKK"];
 
-for(let flight of flights){
+let flights=[];
 
-let f = await getFlight(flight);
+for(const airport of airportsToCheck){
 
-if(f){
-results.push(f);
+let board=await getAirportBoard(airport);
+
+for(const f of board){
+
+if(tracked.includes(f.number)){
+flights.push(f);
 }
 
 }
 
-res.json(results);
+}
 
-});
+return flights;
+
+}
+
+function loadHistory(){
+
+if(!fs.existsSync("history.json")) return[];
+
+return JSON.parse(fs.readFileSync("history.json"));
+
+}
+
+function saveHistory(h){
+
+fs.writeFileSync("history.json",JSON.stringify(h,null,2));
+
+}
 
 async function updateHistory(){
 
-let history = loadHistory();
+let history=loadHistory();
 
-for(let flight of flights){
+let flights=await findFlights();
 
-let f = await getFlight(flight);
+for(const f of flights){
 
-if(!f) continue;
+let last=[...history].reverse().find(h=>h.flight===f.number);
 
-let status = f.status || "unknown";
-
-let lastEntry = [...history].reverse().find(h => h.flight === f.number);
-
-if(lastEntry && lastEntry.status === status){
-continue;
-}
+if(last && last.status===f.status) continue;
 
 history.push({
-
 time:new Date().toISOString(),
 flight:f.number,
-status:status
-
+status:f.status
 });
-
-console.log("Logged change:",f.number,status);
 
 }
 
@@ -110,21 +109,59 @@ saveHistory(history);
 
 }
 
+app.get("/api/flights",async(req,res)=>{
+
+let flights=await findFlights();
+
+let result=[];
+
+for(const f of flights){
+
+let dep=airports[f.departure.airport.iata];
+let arr=airports[f.arrival.airport.iata];
+
+if(!dep||!arr) continue;
+
+result.push({
+
+number:f.number,
+status:f.status,
+
+departure:{
+airport:{
+name:dep.name,
+location:{lat:dep.lat,lon:dep.lon}
+},
+scheduledTime:{local:f.departure.scheduledTime.local}
+},
+
+arrival:{
+airport:{
+name:arr.name,
+location:{lat:arr.lat,lon:arr.lon}
+},
+scheduledTime:{local:f.arrival.scheduledTime.local}
+}
+
+});
+
+}
+
+res.json(result);
+
+});
+
 app.get("/history",(req,res)=>{
-
 res.json(loadHistory());
-
 });
 
 updateHistory();
-setInterval(updateHistory,300000);
+setInterval(updateHistory,60000);
 
-const PORT = process.env.PORT || 3000;
+const PORT=process.env.PORT||3000;
 
 app.listen(PORT,()=>{
 
-console.log("Leni's Flight Tracker running");
-console.log("Server running on port:",PORT);
+console.log("Flight tracker running");
 
 });
-//redeploy
